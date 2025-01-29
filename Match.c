@@ -52,11 +52,47 @@ struct sub {
     PointerList* OutPointers;
 };
 
+typedef struct VisitedNode {
+    State* state;
+    struct VisitedNode* next;
+} VisitedNode;
+
+VisitedNode* visitedHead = NULL;
+
+bool isVisited(State* state) {
+    VisitedNode* current = visitedHead;
+    while (current != NULL) {
+        if (current->state == state) return true;
+        current = current->next;
+    }
+    return false;
+}
+
+void markVisited(State* state) {
+    VisitedNode* newNode = malloc(sizeof(VisitedNode));
+    newNode->state = state;
+    newNode->next = visitedHead;
+    visitedHead = newNode;
+}
+
+void freeVisited() {
+    VisitedNode* current = visitedHead;
+    while (current != NULL) {
+        VisitedNode* temp = current;
+        current = current->next;
+        free(temp);
+    }
+    visitedHead = NULL;
+}
+
+
 State* CreateState(int Symbol, State* Transition1, State* Transition2) {
     State* NewState = malloc(sizeof(State));
+    printf("Created state -> %p\n", (void*)NewState);
     NewState->Symbol = Symbol;
     NewState->Transition1 = Transition1;
     NewState->Transition2 = Transition2;
+    NewState->Mark = 0; 
     return NewState;
 }
 
@@ -82,6 +118,7 @@ void ConnectAutomata(PointerList* OutPointers, State* Start)
 PointerList* AppendOutPointers(PointerList* OutPointers, PointerList* MoreOutPointers)
 {
     if (OutPointers == NULL) {
+        printf("Appending NULL -> %p\n", (void*)MoreOutPointers);
         return MoreOutPointers;
     }
 	PointerList* NewOutPointers = OutPointers;
@@ -90,13 +127,23 @@ PointerList* AppendOutPointers(PointerList* OutPointers, PointerList* MoreOutPoi
         OutPointers = OutPointers->NextPointer;
     }
     OutPointers->NextPointer = MoreOutPointers;
+    printf("Appending %p -> %p\n", (void*)OutPointers, (void*)MoreOutPointers);
     return NewOutPointers;
+}
 
+void FreePointerList(PointerList* list) {
+    while (list) {
+        PointerList* next = list->NextPointer;
+        printf("Freeing PointerList at %p\n", (void*)list);
+        free(list);
+        list = next;
+    }
 }
 
 SubExpression ApplyKleeneStar(SubExpression* NFA) {
     State* NewStart = CreateState(Split, NFA->Start, NULL);
     ConnectAutomata(NFA->OutPointers, NewStart);
+    FreePointerList(NFA->OutPointers);
     // Make a new PointerList with just NewStart->Transition2
     PointerList* NewOutPointers = malloc(sizeof(PointerList));
     NewOutPointers->CurrentPointer = &(NewStart->Transition2);
@@ -107,6 +154,7 @@ SubExpression ApplyKleeneStar(SubExpression* NFA) {
 SubExpression ApplyOneOrMore(SubExpression* NFA) {
     State* NewSplit = CreateState(Split, NFA->Start, NULL);
     ConnectAutomata(NFA->OutPointers, NewSplit);
+    FreePointerList(NFA->OutPointers);
     // Make a new PointerList with just NewSplit->Transition2
     PointerList* NewOutPointers = malloc(sizeof(PointerList));
     NewOutPointers->CurrentPointer = &(NewSplit->Transition2);
@@ -129,12 +177,14 @@ SubExpression ApplyUnion(SubExpression* NFA1, SubExpression* NFA2) {
 
 SubExpression ApplyConcatenation(SubExpression* NFA1, SubExpression* NFA2) {
     ConnectAutomata(NFA1->OutPointers, NFA2->Start);
+    FreePointerList(NFA1->OutPointers);
     return CreateSubExpression(NFA1->Start, NFA2->OutPointers);
 }
 
 SubExpression CreateSingleCharacter(int Symbol) {
     State* Start = CreateState(Symbol,NULL,NULL);
     PointerList* OutPointer = malloc(sizeof(PointerList));
+    printf("Allocated PointerList at %p\n", (void*)OutPointer);
     OutPointer->CurrentPointer = &(Start->Transition1);
     OutPointer->NextPointer = NULL;
     return CreateSubExpression(Start, OutPointer);
@@ -196,7 +246,7 @@ SubExpression GenerateNFA(char* Regex) {
 
     // If your stack size is not 1, then something went wrong.
     if (StackPointer - Stack != 1) {
-        fprintf(stderr, "Something went wrong, stack has %d items left.\n", StackPointer - Stack);
+        fprintf(stderr, "Something went wrong, stack has %ld items left.\n", StackPointer - Stack);
         exit(1);
     }
 
@@ -261,6 +311,27 @@ int MatchesRegex(SubExpression ThompsonNFA, char* StringToCheck) {
     return SetContainsMatch(&CurrentSet);
 } 
 
+void FreeState(State* state) {
+    // To avoid double freeing we use state->Mark
+    // to mark wether it has already been encountered
+    // or not  
+    if (state == NULL || isVisited(state)) {
+        return;
+    }
+    markVisited(state);
+    FreeState(state->Transition1);
+    FreeState(state->Transition2);
+    printf("Freed state -> %p\n", (void*)state);
+    free(state);
+
+}
+
+void FreeSubExpression(SubExpression* expr) {
+    FreePointerList(expr->OutPointers);
+    FreeState(expr->Start);
+    freeVisited();
+}
+
 int main(int argc, char* argv[]) {
     if (argc != 3) {
         fprintf(stderr, "Usage: Match <regex> <string>\n");
@@ -277,6 +348,8 @@ int main(int argc, char* argv[]) {
     printf("Regex: \"%s\"\n", R);
     printf("Test String: \"%s\"\n", S);
     printf("Matches: %s\n", Result ? "YES" : "NO");
+
+    FreeSubExpression(&NFA);
 
     return 0;
 }
